@@ -26,58 +26,27 @@ contains a partial list of places where FlashAttention is being used.
 FlashAttention and FlashAttention-2 are free to use and modify (see LICENSE).
 Please cite and credit FlashAttention if you use it.
 
-
-## FlashAttention-3 beta release
-FlashAttention-3 is optimized for Hopper GPUs (e.g. H100). 
-
-Blogpost: https://tridao.me/blog/2024/flash3/
-
-Paper: https://tridao.me/publications/flash3/flash3.pdf
-
-![FlashAttention-3 speedup on H100 80GB SXM5 with FP16](assets/flash3_fp16_fwd.png)
-
-This is a beta release for testing / benchmarking before we integrate that with
-the rest of the repo.
-
-Currently released:
-- FP16 / BF16 forward and backward, FP8 forward
-
-Requirements: H100 / H800 GPU, CUDA >= 12.3.
-
-For now, we highly recommend CUDA 12.3 for best performance.
-
-To install:
-```sh
-cd hopper
-python setup.py install
-```
-To run the test:
-```sh
-export PYTHONPATH=$PWD
-pytest -q -s test_flash_attn.py
-```
-Once the package is installed, you can import it as follows:
-```python
-import flash_attn_interface
-flash_attn_interface.flash_attn_func()
-```
-
 ## Installation and features
-**Requirements:**
-- CUDA toolkit or ROCm toolkit
+
+Requirements:
+- CUDA 11.6 and above.
 - PyTorch 1.12 and above.
-- `packaging` Python package (`pip install packaging`)
-- `ninja` Python package (`pip install ninja`) *
 - Linux. Might work for Windows starting v2.3.2 (we've seen a few positive [reports](https://github.com/Dao-AILab/flash-attention/issues/595)) but Windows compilation still requires more testing. If you have ideas on how to set up prebuilt CUDA wheels for Windows, please reach out via Github issue.
 
-\* Make sure that `ninja` is installed and that it works correctly (e.g. `ninja
+We recommend the
+[Pytorch](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch)
+container from Nvidia, which has all the required tools to install FlashAttention.
+
+To install:
+1. Make sure that PyTorch is installed.
+2. Make sure that `packaging` is installed (`pip install packaging`)
+3. Make sure that `ninja` is installed and that it works correctly (e.g. `ninja
 --version` then `echo $?` should return exit code 0). If not (sometimes `ninja
 --version` then `echo $?` returns a nonzero exit code), uninstall then reinstall
 `ninja` (`pip uninstall -y ninja && pip install ninja`). Without `ninja`,
 compiling can take a very long time (2h) since it does not use multiple CPU
-cores. With `ninja` compiling takes 3-5 minutes on a 64-core machine using CUDA toolkit.
-
-**To install:**
+cores. With `ninja` compiling takes 3-5 minutes on a 64-core machine.
+4. Then:
 ```sh
 pip install flash-attn --no-build-isolation
 ```
@@ -94,80 +63,14 @@ variable `MAX_JOBS`:
 MAX_JOBS=4 pip install flash-attn --no-build-isolation
 ```
 
-**Interface:** `src/flash_attention_interface.py`
+Interface: `src/flash_attention_interface.py`
 
-### NVIDIA CUDA Support
-**Requirements:**
-- CUDA 11.7 and above.
-
-We recommend the
-[Pytorch](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch)
-container from Nvidia, which has all the required tools to install FlashAttention.
-
-FlashAttention-2 with CUDA currently supports:
+FlashAttention-2 currently supports:
 1. Ampere, Ada, or Hopper GPUs (e.g., A100, RTX 3090, RTX 4090, H100). Support for Turing
    GPUs (T4, RTX 2080) is coming soon, please use FlashAttention 1.x for Turing
    GPUs for now.
 2. Datatype fp16 and bf16 (bf16 requires Ampere, Ada, or Hopper GPUs).
 3. All head dimensions up to 256. ~~Head dim > 192 backward requires A100/A800 or H100/H800~~. Head dim 256 backward now works on consumer GPUs (if there's no dropout) as of flash-attn 2.5.5.
-
-### AMD ROCm Support
-ROCm version has two backends. There is [composable_kernel](https://github.com/ROCm/composable_kernel) (ck) which is the default backend and a [Triton](https://github.com/triton-lang/triton) backend. They provide an implementation of FlashAttention-2.
-
-**Requirements:**
-- ROCm 6.0 and above.
-
-We recommend the
-[Pytorch](https://hub.docker.com/r/rocm/pytorch)
-container from ROCm, which has all the required tools to install FlashAttention.
-
-#### Composable Kernel Backend
-FlashAttention-2 ROCm CK backend currently supports:
-1. MI200 or MI300 GPUs.
-2. Datatype fp16 and bf16
-3. Forward's head dimensions up to 256. Backward head dimensions up to 128.
-
-#### Triton Backend
-The Triton implementation of the [Flash Attention v2](https://tridao.me/publications/flash2/flash2.pdf) is currently a work in progress.
-
-It supports AMD's CDNA (MI200, MI300) and RDNA GPU's using fp16, bf16 and fp32 datatypes.
-
-These features are supported in Fwd and Bwd
-1) Fwd and Bwd with causal masking
-2) Variable sequence lengths
-3) Arbitrary Q and KV sequence lengths
-4) Arbitrary head sizes
-
-These features are supported in Fwd for now. We will add them to backward soon.
-1) Multi and grouped query attention
-2) ALiBi and matrix bias
-
-These features are in development
-1) Paged Attention 
-2) Sliding Window
-3) Rotary embeddings
-4) Dropout
-5) Performance Improvements
-
-#### Getting Started
-To get started with the triton backend for AMD, follow the steps below.
-
-First install the recommended Triton [commit](https://github.com/triton-lang/triton/commit/3ca2f498e98ed7249b82722587c511a5610e00c4).
-
-```
-git clone https://github.com/triton-lang/triton
-cd triton
-git checkout 3ca2f498e98ed7249b82722587c511a5610e00c4 
-pip install --verbose -e python
-```
-Then install and test Flash Attention with the flag `FLASH_ATTENTION_TRITON_AMD_ENABLE` set to `"TRUE"`.
-
-```
-export FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"
-cd flash-attention
-python setup.py install
-pytest tests/test_flash_attn.py
-```
 
 
 ## How to use FlashAttention
@@ -414,11 +317,7 @@ Thanks to @beginlner for this contribution.
 ### 2.6: Softcapping.
 
 Support attention with softcapping, as used in Gemma-2 and Grok models.
-Thanks to @Narsil and @lucidrains for this contribution.
-
-### 2.7: Compatibility with torch compile
-
-Thanks to @ani300 for this contribution.
+Thanks to @Narsil for this contribution.
 
 ## Performance
 
@@ -499,12 +398,6 @@ This new release of FlashAttention-2 has been tested on several GPT-style
 models, mostly on A100 GPUs.
 
 If you encounter bugs, please open a GitHub Issue!
-
-## Tests
-To run the tests:
-```sh
-pytest tests/test_flash_attn_ck.py
-```
 
 ## Citation
 If you use this codebase, or otherwise found our work valuable, please cite:
