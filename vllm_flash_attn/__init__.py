@@ -1,6 +1,6 @@
 __version__ = "2.7.2.post1"
 
-from flash_attn.flash_attn_interface import (
+from vllm_flash_attn.flash_attn_interface import (
     flash_attn_func,
     flash_attn_kvpacked_func,
     flash_attn_qkvpacked_func,
