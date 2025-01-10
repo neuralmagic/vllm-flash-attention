@@ -4,6 +4,9 @@ project(vllm_flash_attn LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(FA2_ENABLED ON)
+set(FA3_ENABLED ON)
+
 # CUDA by default, can be overridden by using -DVLLM_TARGET_DEVICE=... (used by setup.py)
 set(VLLM_TARGET_DEVICE "cuda" CACHE STRING "Target device backend for vLLM")
 
@@ -19,7 +22,7 @@ set(ignoreMe "${VLLM_PYTHON_PATH}")
 set(PYTHON_SUPPORTED_VERSIONS "3.8" "3.9" "3.10" "3.11" "3.12")
 
 # Supported NVIDIA architectures.
-set(CUDA_SUPPORTED_ARCHS "8.0;8.6;8.9;9.0")
+set(CUDA_SUPPORTED_ARCHS "8.0;8.6;8.9;9.0;9.0a")
 
 # Supported AMD GPU architectures.
 set(HIP_SUPPORTED_ARCHS "gfx906;gfx908;gfx90a;gfx940;gfx941;gfx942;gfx1030;gfx1100")
@@ -37,113 +40,76 @@ set(TORCH_SUPPORTED_VERSION_CUDA "2.4.0")
 
 find_python_constrained_versions(${PYTHON_SUPPORTED_VERSIONS})
 
-if (VLLM_PARENT_BUILD)
-    # vLLM extracts the supported architectures from the global CMAKE_CUDA_FLAGS, which are set by torch.
-    # Because CMAKE_CUDA_FLAGS has been modified, we cannot use the same logic.
-    # Hence, we just use the parent's VLLM_GPU_ARCHES and VLLM_GPU_FLAGS.
-    message(STATUS "Building vllm-flash-attn inside vLLM. Skipping flag detection and relying on parent build.")
-    macro(check_found NAME VAR)
-        if (NOT ${VAR})
-            message(FATAL_ERROR "${NAME} must have been found by parent.")
-        endif ()
-    endmacro()
+#
+# Update cmake's `CMAKE_PREFIX_PATH` with torch location.
+#
+append_cmake_prefix_path("torch" "torch.utils.cmake_prefix_path")
+message(DEBUG "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 
-    check_found("Torch" TORCH_FOUND)
-
-    set(VLLM_FA_GPU_FLAGS ${VLLM_GPU_FLAGS})
-    set(VLLM_FA_GPU_ARCHES ${VLLM_GPU_ARCHES})
-
-    # Allow direct override of GPU architectures.
-    # These have to be in CMake syntax (75-real, 89-virtual, etc).
-    if (DEFINED ENV{VLLM_FA_CMAKE_GPU_ARCHES})
-        message(STATUS "Overriding GPU architectures to $ENV{VLLM_FA_CMAKE_GPU_ARCHES}")
-        set(VLLM_FA_GPU_ARCHES $ENV{VLLM_FA_CMAKE_GPU_ARCHES})
-
-        # Generally, we want to build with a subset of the parent arches.
-        foreach (VLLM_FA_GPU_ARCH IN LISTS VLLM_FA_GPU_ARCHES)
-            if (NOT VLLM_FA_GPU_ARCH IN_LIST VLLM_GPU_ARCHES)
-                message(WARNING "Using GPU architecture ${VLLM_FA_GPU_ARCH}, "
-                        "which is not included in the parent list.")
-            endif ()
-        endforeach ()
-    endif ()
-
-else ()
-    message(STATUS "Standalone vllm-flash-attn build.")
-
-    #
-    # Update cmake's `CMAKE_PREFIX_PATH` with torch location.
-    #
-    append_cmake_prefix_path("torch" "torch.utils.cmake_prefix_path")
-    message(DEBUG "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
-
-    #
-    # Import torch cmake configuration.
-    # Torch also imports CUDA (and partially HIP) languages with some customizations,
-    # so there is no need to do this explicitly with check_language/enable_language,
-    # etc.
-    #
+#
+# Import torch cmake configuration.
+# Torch also imports CUDA (and partially HIP) languages with some customizations,
+# so there is no need to do this explicitly with check_language/enable_language,
+# etc.
+#
+if (NOT Torch_FOUND)
     find_package(Torch REQUIRED)
+endif()
 
-    #
-    # Set up GPU language and check the torch version and warn if it isn't
-    # what is expected.
-    #
-    if (NOT HIP_FOUND AND CUDA_FOUND)
-        set(VLLM_GPU_LANG "CUDA")
+#
+# Set up GPU language and check the torch version and warn if it isn't
+# what is expected.
+#
+if (NOT HIP_FOUND AND CUDA_FOUND)
+    set(VLLM_GPU_LANG "CUDA")
 
-        # Check CUDA is at least 11.6
-        if (CUDA_VERSION VERSION_LESS 11.6)
-            message(FATAL_ERROR "CUDA version 11.6 or greater is required.")
-        endif ()
+    # Check CUDA is at least 11.6
+    if (CUDA_VERSION VERSION_LESS 11.6)
+        message(FATAL_ERROR "CUDA version 11.6 or greater is required.")
+    endif ()
 
-        if (NOT Torch_VERSION VERSION_EQUAL ${TORCH_SUPPORTED_VERSION_CUDA})
-            message(WARNING "Pytorch version ${TORCH_SUPPORTED_VERSION_CUDA} "
-                    "expected for CUDA build, saw ${Torch_VERSION} instead.")
-        endif ()
-    elseif (HIP_FOUND)
-        message(FATAL_ERROR "ROCm build is not currently supported for vllm-flash-attn.")
-
-        set(VLLM_GPU_LANG "HIP")
-
-        # Importing torch recognizes and sets up some HIP/ROCm configuration but does
-        # not let cmake recognize .hip files. In order to get cmake to understand the
-        # .hip extension automatically, HIP must be enabled explicitly.
-        enable_language(HIP)
-
-        # ROCm 5.X and 6.X
-        if (ROCM_VERSION_DEV_MAJOR GREATER_EQUAL 5 AND
-                NOT Torch_VERSION VERSION_EQUAL ${TORCH_SUPPORTED_VERSION_ROCM})
-            message(WARNING "Pytorch version >= ${TORCH_SUPPORTED_VERSION_ROCM} "
-                    "expected for ROCm build, saw ${Torch_VERSION} instead.")
-        endif ()
-    else ()
-        message(FATAL_ERROR "Can't find CUDA or HIP installation.")
+    if (NOT Torch_VERSION VERSION_EQUAL ${TORCH_SUPPORTED_VERSION_CUDA})
+        message(WARNING "Pytorch version ${TORCH_SUPPORTED_VERSION_CUDA} "
+                "expected for CUDA build, saw ${Torch_VERSION} instead.")
     endif ()
 
     #
-    # Override the GPU architectures detected by cmake/torch and filter them by
-    # the supported versions for the current language.
-    # The final set of arches is stored in `VLLM_GPU_ARCHES`.
+    # For cuda we want to be able to control which architectures we compile for on
+    # a per-file basis in order to cut down on compile time. So here we extract
+    # the set of architectures we want to compile for and remove the from the
+    # CMAKE_CUDA_FLAGS so that they are not applied globally.
     #
-    override_gpu_arches(VLLM_FA_GPU_ARCHES
-            ${VLLM_GPU_LANG}
-            "${${VLLM_GPU_LANG}_SUPPORTED_ARCHS}")
+    clear_cuda_arches(CUDA_ARCH_FLAGS)
 
-    #
-    # Query torch for additional GPU compilation flags for the given
-    # `VLLM_GPU_LANG`.
-    # The final set of arches is stored in `VLLM_FA_GPU_FLAGS`.
-    #
-    get_torch_gpu_compiler_flags(VLLM_FA_GPU_FLAGS ${VLLM_GPU_LANG})
-
-    #
-    # Set nvcc parallelism.
-    #
-    if (NVCC_THREADS AND VLLM_GPU_LANG STREQUAL "CUDA")
-        list(APPEND VLLM_FA_GPU_FLAGS "--threads=${NVCC_THREADS}")
-    endif ()
+    if (NOT CUDA_ARCHS)
+        extract_unique_cuda_archs_ascending(CUDA_ARCHS "${CUDA_ARCH_FLAGS}")
+    endif()
+    message(STATUS "CUDA target architectures: ${CUDA_ARCHS}")
+    # Filter the target architectures by the supported supported archs
+    # since for some files we will build for all CUDA_ARCHS.
+    cuda_archs_loose_intersection(CUDA_ARCHS
+        "${CUDA_SUPPORTED_ARCHS}" "${CUDA_ARCHS}")
+    message(STATUS "CUDA supported target architectures: ${CUDA_ARCHS}")
+elseif (HIP_FOUND)
+    message(FATAL_ERROR "ROCm build is not currently supported for vllm-flash-attn.")
+else ()
+    message(FATAL_ERROR "Can't find CUDA or HIP installation.")
 endif ()
+
+#
+# Query torch for additional GPU compilation flags for the given
+# `VLLM_GPU_LANG`.
+# The final set of arches is stored in `VLLM_FA_GPU_FLAGS`.
+#
+get_torch_gpu_compiler_flags(VLLM_FA_GPU_FLAGS ${VLLM_GPU_LANG})
+
+#
+# Set nvcc parallelism.
+#
+if (NVCC_THREADS AND VLLM_GPU_LANG STREQUAL "CUDA")
+    list(APPEND VLLM_FA_GPU_FLAGS "--threads=${NVCC_THREADS}")
+endif ()
+
 
 # Other flags
 list(APPEND VLLM_FA_GPU_FLAGS --expt-relaxed-constexpr --expt-extended-lambda --use_fast_math)
@@ -155,87 +121,94 @@ string(REPLACE "-O2" "-O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_R
 # _C extension
 #
 
-set(FLASH_ATTN_GEN_SRCS
-    "csrc/flash_attn/flash_api.cpp"
-    "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim256_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim32_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim32_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim64_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim64_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim96_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_hdim256_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu"
-    "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_causal_sm80.cu"
-)
+if (FA2_ENABLED)
+    set(FA2_GEN_SRCS
+        "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim256_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim32_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim32_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim64_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim96_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_hdim256_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu"
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_causal_sm80.cu")
 
-define_gpu_extension_target(
-        vllm_flash_attn_c
+    # For CUDA we set the architectures on a per file basis
+    if (VLLM_GPU_LANG STREQUAL "CUDA")
+        cuda_archs_loose_intersection(FA2_ARCHS "8.0;9.0" ${CUDA_ARCHS})
+
+        set_gencode_flags_for_srcs(
+        SRCS "${FA2_ARCHS}"
+        CUDA_ARCHS "${FA2_GEN_SRCS}")
+    endif()
+
+    define_gpu_extension_target(
+        _vllm_fa2_C
         DESTINATION vllm_flash_attn
         LANGUAGE ${VLLM_GPU_LANG}
         SOURCES 
             csrc/flash_attn/flash_api.cpp 
             csrc/flash_attn/torch_flash_api.cpp 
-            ${FLASH_ATTN_GEN_SRCS}
+            ${FA2_GEN_SRCS}
         COMPILE_FLAGS ${VLLM_FA_GPU_FLAGS}
-        ARCHITECTURES ${VLLM_FA_GPU_ARCHES}
         USE_SABI 3
-        WITH_SOABI
-)
+        WITH_SOABI)
 
-target_include_directories(vllm_flash_attn_c PRIVATE
+    target_include_directories(_vllm_fa2_C PRIVATE
         csrc/flash_attn
         csrc/flash_attn/src
+        csrc/common
         csrc/cutlass/include)
 
-# custom definitions
-target_compile_definitions(vllm_flash_attn_c PRIVATE
+    # custom definitions
+    target_compile_definitions(_vllm_fa2_C PRIVATE
         FLASHATTENTION_DISABLE_BACKWARD
         FLASHATTENTION_DISABLE_DROPOUT
         # FLASHATTENTION_DISABLE_ALIBI
@@ -243,10 +216,48 @@ target_compile_definitions(vllm_flash_attn_c PRIVATE
         FLASHATTENTION_DISABLE_UNEVEN_K
         # FLASHATTENTION_DISABLE_LOCAL
         FLASHATTENTION_DISABLE_PYBIND
-)
+    )
+endif ()
 
-# Check for old generator
-find_file(OLD_GENERATOR_FILE "ATen/CUDAGeneratorImpl.h" ${TORCH_INCLUDE_DIRS} NO_DEFAULT_PATH)
-if (OLD_GENERATOR_FILE)
-    target_compile_definitions(vllm_flash_attn_c PRIVATE -DOLD_GENERATOR_PATH)
+if (FA3_ENABLED)
+    file(GLOB FA3_GEN_SRCS "hopper/instantiations/flash_fwd_*.cu")
+
+    # For CUDA we set the architectures on a per file basis
+    if (VLLM_GPU_LANG STREQUAL "CUDA")
+        cuda_archs_loose_intersection(FA3_ARCHS "9.0a" ${CUDA_ARCHS})
+
+        set_gencode_flags_for_srcs(
+            SRCS "${FA3_ARCHS}"
+            CUDA_ARCHS "${FA3_GEN_SRCS}")
+    endif()
+
+    define_gpu_extension_target(
+        _vllm_fa3_C
+        DESTINATION vllm_flash_attn
+        LANGUAGE ${VLLM_GPU_LANG}
+        SOURCES 
+            hopper/flash_fwd_combine.cu
+            hopper/flash_api.cpp 
+            hopper/flash_api_torch_lib.cpp 
+            ${FA3_GEN_SRCS}
+        COMPILE_FLAGS ${VLLM_FA_GPU_FLAGS}
+        ARCHITECTURES ${VLLM_FA_GPU_ARCHES}
+        USE_SABI 3
+        WITH_SOABI)
+
+    target_include_directories(_vllm_fa3_C PRIVATE
+        hopper
+        csrc/common
+        csrc/cutlass/include)
+
+    # custom definitions
+    target_compile_definitions(_vllm_fa3_C PRIVATE
+        FLASHATTENTION_DISABLE_BACKWARD
+        FLASHATTENTION_DISABLE_DROPOUT
+        # FLASHATTENTION_DISABLE_ALIBI
+        # FLASHATTENTION_DISABLE_SOFTCAP
+        FLASHATTENTION_DISABLE_UNEVEN_K
+        # FLASHATTENTION_DISABLE_LOCAL
+        FLASHATTENTION_DISABLE_PYBIND
+    )
 endif ()

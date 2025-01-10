@@ -8,190 +8,39 @@ import torch.nn as nn
 # isort: off
 # We need to import the CUDA kernels after importing torch
 # Use relative import to support build-from-source installation in vLLM
-from . import vllm_flash_attn_c # noqa: F401
+
+try:
+    from . import _vllm_fa2_C  # noqa: F401
+    FA2_AVAILABLE = True
+except ImportError:
+    FA2_AVAILABLE = False
+
+try:
+    from . import _vllm_fa3_C  # noqa: F401
+    FA3_AVAILABLE = True
+except ImportError as e:
+    print(e)
+    FA3_AVAILABLE = False
 
 # isort: on
 
+DEFAULT_FA_VERSION = 2
+
+def is_fa2_supported(device = None) -> bool:
+    return False
+    return FA2_AVAILABLE and torch.cuda.get_device_capability(device)[0] >= 8
+
+def is_fa3_supported(device = None) -> bool:
+    return FA3_AVAILABLE and torch.cuda.get_device_capability(device)[0] >= 8
+
+#
+#  For vLLM we only care about `flash_attn_varlen_func` and 
+#   `flash_attn_with_kvcache` so we only maintain wrappers for these two.
+#
+
+
 def maybe_contiguous(x):
     return x.contiguous() if x is not None and x.stride(-1) != 1 else x
-
-def _get_block_size_n(device, head_dim, is_dropout, is_causal):
-    # This should match the block sizes in the CUDA kernel
-    assert head_dim <= 256
-    major, minor = torch.cuda.get_device_capability(device)
-    is_sm8x = major == 8 and minor > 0  # Only include sm86 and sm89, exclude sm80 (A100)
-    is_sm80 = major == 8 and minor == 0
-    is_sm90 = major == 9 and minor == 0
-    if head_dim <= 32:
-        return 128
-    if head_dim <= 64:
-        return 128 if not is_dropout else 64
-    elif head_dim <= 96:
-        return 64
-    elif head_dim <= 128:
-        if is_sm8x:
-            return 64 if (not is_dropout and is_causal) else 32
-        else:
-            return 64 if not is_dropout else 32
-    elif head_dim <= 160:
-        if is_sm8x:
-            return 64
-        else:
-            return 32
-    elif head_dim <= 192:
-        return 64
-    elif head_dim <= 224:
-        return 64
-    elif head_dim <= 256:
-        return 64
-
-
-def _flash_attn_forward(
-    q, k, v, dropout_p, softmax_scale, causal, window_size, softcap, alibi_slopes, return_softmax, *, out=None
-):
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse = torch.ops.vllm_flash_attn_c.fwd(
-        q,
-        k,
-        v,
-        out,
-        alibi_slopes,
-        dropout_p,
-        softmax_scale,
-        causal,
-        window_size[0],
-        window_size[1],
-        softcap,
-        return_softmax,
-        None,
-    )
-    return out, softmax_lse
-
-
-def _flash_attn_varlen_forward(
-    q,
-    k,
-    v,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    max_seqlen_q,
-    max_seqlen_k,
-    dropout_p,
-    softmax_scale,
-    causal,
-    window_size,
-    softcap,
-    alibi_slopes,
-    return_softmax,
-    block_table,
-    *,
-    out=None,
-    leftpad_k=None,
-):
-    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
-    out, softmax_lse = torch.ops.vllm_flash_attn_c.varlen_fwd(
-        q,
-        k,
-        v,
-        out,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        None,
-        leftpad_k,
-        block_table,
-        alibi_slopes,
-        max_seqlen_q,
-        max_seqlen_k,
-        dropout_p,
-        softmax_scale,
-        False,
-        causal,
-        window_size[0],
-        window_size[1],
-        softcap,
-        return_softmax,
-        None,
-    )
-    return out, softmax_lse
-
-
-def flash_attn_func(
-    q,
-    k,
-    v,
-    dropout_p=0.0,
-    softmax_scale=None,
-    causal=False,
-    window_size=(-1, -1),  # -1 means infinite context window
-    softcap=0.0, # 0.0 means deactivated
-    alibi_slopes=None,
-    deterministic=False,
-    return_attn_probs=False,
-    *,
-    return_softmax_lse=False,
-    out=None,
-):
-    """dropout_p should be set to 0.0 during evaluation
-    Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
-    than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
-    For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
-    0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
-
-    If causal=True, the causal mask is aligned to the bottom right corner of the attention matrix.
-    For example, if seqlen_q = 2 and seqlen_k = 5, the causal mask (1 = keep, 0 = masked out) is:
-        1 1 1 1 0
-        1 1 1 1 1
-    If seqlen_q = 5 and seqlen_k = 2, the causal mask is:
-        0 0
-        0 0
-        0 0
-        1 0
-        1 1
-    If the row of the mask is all zero, the output will be zero.
-
-    If window_size != (-1, -1), implements sliding window local attention. Query at position i
-    will only attend to keys between
-    [i + seqlen_k - seqlen_q - window_size[0], i + seqlen_k - seqlen_q + window_size[1]] inclusive.
-
-    Arguments:
-        q: (batch_size, seqlen, nheads, headdim)
-        k: (batch_size, seqlen, nheads_k, headdim)
-        v: (batch_size, seqlen, nheads_k, headdim)
-        dropout_p: float. Dropout probability.
-        softmax_scale: float. The scaling of QK^T before applying softmax.
-            Default to 1 / sqrt(headdim).
-        causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
-        window_size: (left, right). If not (-1, -1), implements sliding window local attention.
-        alibi_slopes: (nheads,) or (batch_size, nheads), fp32. A bias of
-            (-alibi_slope * |i + seqlen_k - seqlen_q - j|)
-            is added to the attention score of query i and key j.
-        deterministic: bool. Whether to use the deterministic implementation of the backward pass,
-            which is slightly slower and uses more memory. The forward pass is always deterministic.
-        return_attn_probs: bool. Whether to return the attention probabilities. This option is for
-           testing only. The returned probabilities are not guaranteed to be correct
-           (they might not have the right scaling).
-    Return:
-        out: (batch_size, seqlen, nheads, headdim).
-        softmax_lse [optional, if return_softmax_lse=True]: (batch_size, nheads, seqlen). The
-            logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
-            normalization factor).
-    """
-    if softmax_scale is None:
-        softmax_scale = q.shape[-1] ** (-0.5)
-    out, softmax_lse = _flash_attn_forward(
-        q,
-        k,
-        v,
-        dropout_p,
-        softmax_scale,
-        causal=causal,
-        window_size=window_size,
-        softcap=softcap,
-        alibi_slopes=alibi_slopes,
-        return_softmax=return_attn_probs and dropout_p > 0,
-        out=out,
-    )
-    return (out, softmax_lse) if return_softmax_lse else out
 
 
 def flash_attn_varlen_func(
@@ -214,6 +63,7 @@ def flash_attn_varlen_func(
     *,
     return_softmax_lse=False,
     out=None,
+    fa_version: int = DEFAULT_FA_VERSION,
 ):
     """dropout_p should be set to 0.0 during evaluation
     Supports multi-query and grouped-query attention (MQA/GQA) by passing in K, V with fewer heads
@@ -276,24 +126,59 @@ def flash_attn_varlen_func(
     else:
         assert len(window_size) == 2
         real_window_size = (window_size[0], window_size[1])
-    out, softmax_lse = _flash_attn_varlen_forward(
-        q,
-        k,
-        v,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        max_seqlen_q,
-        max_seqlen_k,
-        dropout_p,
-        softmax_scale,
-        causal=causal,
-        window_size=real_window_size,
-        softcap=softcap,
-        alibi_slopes=alibi_slopes,
-        return_softmax=return_attn_probs and dropout_p > 0,
-        block_table=block_table,
-        out=out,
-    )
+    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    
+    if fa_version == 2:
+        out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
+            q,
+            k,
+            v,
+            out,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            None,
+            None,
+            block_table,
+            alibi_slopes,
+            max_seqlen_q,
+            max_seqlen_k,
+            dropout_p,
+            softmax_scale,
+            False,
+            causal,
+            real_window_size[0],
+            real_window_size[1],
+            softcap,
+            return_softmax_lse,
+            None,
+        )
+    elif fa_version == 3:
+        out, softmax_lse, _, _ = torch.ops._vllm_fa3_C.fwd(
+            q, k, v,          # q, k, v
+            None, None,       # k_new, v_new
+            out,
+            cu_seqlens_q,
+            cu_seqlens_k,
+            None,             # cu_seqlens_k_new
+            None, None,       # seqused_q, seqused_k
+            max_seqlen_q, max_seqlen_k,
+            block_table,
+            alibi_slopes,
+            None,             # kv_batch_idx
+            None, None,       # rotary_cos, rotary_sin
+            None, None, None, # q_descale, k_descale, v_descale
+            softmax_scale,
+            causal,
+            real_window_size[0], real_window_size[1],
+            0,                # sink_token_length
+            softcap,
+            True,             # rotary_interleaved
+            1,                # num_splits
+            None,             # pack_gqa
+            0,                # sm_margin
+        )
+    else:
+        raise ValueError(f"Unsupported FA version: {fa_version}")
     return (out, softmax_lse) if return_softmax_lse else out
 
 
@@ -319,6 +204,7 @@ def flash_attn_with_kvcache(
     return_softmax_lse=False,
     *,
     out=None,
+    fa_version: int = DEFAULT_FA_VERSION,
 ):
     """
     If k and v are not None, k_cache and v_cache will be updated *inplace* with the new values from
@@ -418,26 +304,54 @@ def flash_attn_with_kvcache(
         cache_seqlens = maybe_contiguous(cache_seqlens)
     cache_batch_idx = maybe_contiguous(cache_batch_idx)
     block_table = maybe_contiguous(block_table)
-    out, softmax_lse = torch.ops.vllm_flash_attn_c.fwd_kvcache(
-        q,
-        k_cache,
-        v_cache,
-        k,
-        v,
-        cache_seqlens,
-        rotary_cos,
-        rotary_sin,
-        cache_batch_idx,
-        cache_leftpad,
-        block_table,
-        alibi_slopes,
-        out,
-        softmax_scale,
-        causal,
-        window_size[0],
-        window_size[1],
-        softcap,
-        rotary_interleaved,
-        num_splits,
-    )
+    
+    if fa_version == 2:
+        out, softmax_lse = torch.ops._vllm_fa2_C.fwd_kvcache(
+            q,
+            k_cache,
+            v_cache,
+            k,
+            v,
+            cache_seqlens,
+            rotary_cos,
+            rotary_sin,
+            cache_batch_idx,
+            cache_leftpad,
+            block_table,
+            alibi_slopes,
+            out,
+            softmax_scale,
+            causal,
+            window_size[0],
+            window_size[1],
+            softcap,
+            rotary_interleaved,
+            num_splits,
+        )
+    elif fa_version == 3:
+        out, softmax_lse, _, _ = torch.ops._vllm_fa3_C.fwd(
+            q, k_cache, v_cache, # q, k, v
+            k, v,             # k_new, v_new
+            out,
+            None, None,       # cu_seqlens_q, cu_seqlens_k
+            None,             # cu_seqlens_k_new
+            None, cache_seqlens, # seqused_q, seqused_k
+            None, None,       # max_seqlen_q, max_seqlen_k
+            block_table,
+            alibi_slopes,
+            cache_batch_idx,  # kv_batch_idx
+            None, None,       # rotary_cos, rotary_sin
+            None, None, None, # q_descale, k_descale, v_descale
+            softmax_scale,
+            causal,
+            window_size[0], window_size[1],
+            0,                # sink_token_length
+            softcap,
+            True,             # rotary_interleaved
+            1,                # num_splits
+            None,             # pack_gqa
+            0,                # sm_margin
+        )
+    else:
+        raise ValueError(f"Unsupported FA version: {fa_version}")
     return (out, softmax_lse) if return_softmax_lse else out

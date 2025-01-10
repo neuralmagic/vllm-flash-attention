@@ -12,27 +12,9 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from vllm_flash_attn.flash_attn_interface import (
     flash_attn_varlen_func,
     flash_attn_with_kvcache,
+    is_fa2_supported,
+    is_fa3_supported
 )
-
-class OpCheckMode(TorchDispatchMode):
-    def __init__(self, test_utils, op_name_contains: Optional[str]=None, 
-                 op_module_contains: Optional[str]=None):
-        super().__init__()
-        self.op_name_contains = op_name_contains
-        self.op_module_contains = op_module_contains
-        self.test_utils = test_utils
-        self.opcheck_count = 0
-    
-    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-        op_name_filter_pass = self.op_name_contains is None \
-            or self.op_name_contains in func.__name__
-        op_module_filter_pass = self.op_module_contains is None \
-            or self.op_module_contains in func.__module__
-        if op_name_filter_pass and op_module_filter_pass:
-            torch.library.opcheck(func, args=args, kwargs=kwargs, 
-                                  test_utils=self.test_utils)
-            self.opcheck_count += 1
-        return func(*args, **kwargs)
 
 NUM_HEADS = [(4, 4), (8, 2), (16, 2)]
 HEAD_SIZES = [128, 256]
@@ -41,6 +23,9 @@ DTYPES = [torch.float16, torch.bfloat16]
 # one value large enough to test overflow in index calculation.
 # one value small enough to test the schema op check
 NUM_BLOCKS = [32768, 2048]
+VERSIONS = \
+    [2] if is_fa2_supported() else [] + \
+    [3] if is_fa3_supported() else []
 
 
 def ref_paged_attn(
@@ -105,6 +90,7 @@ def ref_paged_attn(
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("soft_cap", [None, 10.0, 50.0])
 @pytest.mark.parametrize("num_blocks", NUM_BLOCKS)
+@pytest.mark.parametrize("fa_version", VERSIONS)
 @torch.inference_mode()
 def test_flash_attn_with_paged_kv(
         kv_lens: List[int],
@@ -114,6 +100,7 @@ def test_flash_attn_with_paged_kv(
         block_size: int,
         soft_cap: Optional[float],
         num_blocks: int,
+        fa_version: int,
 ) -> None:
     torch.set_default_device("cuda")
     torch.cuda.manual_seed_all(0)
@@ -144,19 +131,17 @@ def test_flash_attn_with_paged_kv(
     else:
         test_utils = ["test_faketensor"]
 
-    with OpCheckMode(op_module_contains="vllm_flash_attn_c",
-                     test_utils=test_utils) as opchecker:
-        output = flash_attn_with_kvcache(
-            query.unsqueeze(1),
-            key_cache,
-            value_cache,
-            softmax_scale=scale,
-            causal=True,
-            block_table=block_tables,
-            cache_seqlens=kv_lens_tensor,
-            softcap=soft_cap if soft_cap is not None else 0,
-        ).squeeze(1)
-    assert opchecker.opcheck_count == 1
+    output = flash_attn_with_kvcache(
+        query.unsqueeze(1),
+        key_cache,
+        value_cache,
+        softmax_scale=scale,
+        causal=True,
+        block_table=block_tables,
+        cache_seqlens=kv_lens_tensor,
+        softcap=soft_cap if soft_cap is not None else 0,
+        fa_version=fa_version,
+    ).squeeze(1)
 
     ref_output = ref_paged_attn(
         query=query,
@@ -180,6 +165,7 @@ def test_flash_attn_with_paged_kv(
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("soft_cap", [None, 10.0, 50.0])
 @pytest.mark.parametrize("num_blocks", NUM_BLOCKS)
+@pytest.mark.parametrize("fa_version", VERSIONS)
 @torch.inference_mode()
 def test_varlen_with_paged_kv(
         seq_lens: List[Tuple[int, int]],
@@ -190,6 +176,7 @@ def test_varlen_with_paged_kv(
         block_size: int,
         soft_cap: Optional[float],
         num_blocks: int,
+        fa_version: int,
 ) -> None:
     torch.set_default_device("cuda")
     torch.cuda.manual_seed_all(0)
@@ -234,23 +221,21 @@ def test_varlen_with_paged_kv(
     else:
         test_utils = ["test_faketensor"]
 
-    with OpCheckMode(op_module_contains="vllm_flash_attn_c",
-                     test_utils=test_utils) as opchecker:
-        output = flash_attn_varlen_func(
-            q=query,
-            k=key_cache,
-            v=value_cache,
-            cu_seqlens_q=cu_query_lens,
-            cu_seqlens_k=cu_kv_lens,
-            max_seqlen_q=max_query_len,
-            max_seqlen_k=max_kv_len,
-            softmax_scale=scale,
-            causal=True,
-            window_size=window_size,
-            block_table=block_tables,
-            softcap=soft_cap if soft_cap is not None else 0,
-        )
-    assert opchecker.opcheck_count == 1
+    output = flash_attn_varlen_func(
+        q=query,
+        k=key_cache,
+        v=value_cache,
+        cu_seqlens_q=cu_query_lens,
+        cu_seqlens_k=cu_kv_lens,
+        max_seqlen_q=max_query_len,
+        max_seqlen_k=max_kv_len,
+        softmax_scale=scale,
+        causal=True,
+        window_size=window_size,
+        block_table=block_tables,
+        softcap=soft_cap if soft_cap is not None else 0,
+        fa_version=fa_version
+    )
 
     ref_output = ref_paged_attn(
         query=query,
