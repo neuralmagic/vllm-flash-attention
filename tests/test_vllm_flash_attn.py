@@ -126,11 +126,6 @@ def test_flash_attn_with_paged_kv(
                                  (num_seqs, max_num_blocks_per_seq),
                                  dtype=torch.int32)
 
-    if num_blocks <= 2048:
-        test_utils = ["test_faketensor", "test_schema"]
-    else:
-        test_utils = ["test_faketensor"]
-
     output = flash_attn_with_kvcache(
         query.unsqueeze(1),
         key_cache,
@@ -206,27 +201,19 @@ def test_varlen_with_paged_kv(
     cu_query_lens = torch.tensor([0] + query_lens,
                                  dtype=torch.int32).cumsum(dim=0,
                                                            dtype=torch.int32)
-    cu_kv_lens = torch.tensor([0] + kv_lens,
-                              dtype=torch.int32).cumsum(dim=0,
-                                                        dtype=torch.int32)
+    seqused_k = torch.tensor(kv_lens, dtype=torch.int32)
 
     max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
     block_tables = torch.randint(0,
                                  num_blocks,
                                  (num_seqs, max_num_blocks_per_seq),
                                  dtype=torch.int32)
-
-    if num_blocks <= 2048:
-        test_utils = ["test_faketensor", "test_schema"]
-    else:
-        test_utils = ["test_faketensor"]
-
     output = flash_attn_varlen_func(
         q=query,
         k=key_cache,
         v=value_cache,
         cu_seqlens_q=cu_query_lens,
-        cu_seqlens_k=cu_kv_lens,
+        seqused_k=seqused_k,
         max_seqlen_q=max_query_len,
         max_seqlen_k=max_kv_len,
         softmax_scale=scale,

@@ -27,7 +27,6 @@ except ImportError as e:
 DEFAULT_FA_VERSION = 2
 
 def is_fa2_supported(device = None) -> bool:
-    return False
     return FA2_AVAILABLE and torch.cuda.get_device_capability(device)[0] >= 8
 
 def is_fa3_supported(device = None) -> bool:
@@ -48,7 +47,7 @@ def flash_attn_varlen_func(
     k,
     v,
     cu_seqlens_q,
-    cu_seqlens_k,
+    seqused_k,
     max_seqlen_q,
     max_seqlen_k,
     dropout_p=0.0,
@@ -128,6 +127,8 @@ def flash_attn_varlen_func(
         real_window_size = (window_size[0], window_size[1])
     q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
     
+    dummy_cu_seqlens_k = torch.zeros_like(cu_seqlens_q)
+    
     if fa_version == 2:
         out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
             q,
@@ -135,8 +136,10 @@ def flash_attn_varlen_func(
             v,
             out,
             cu_seqlens_q,
-            cu_seqlens_k,
-            None,
+            # cu_seqlens_k not used since we use seqused_k, but flash_api.cpp 
+            # still wants it so we pass all zeros
+            dummy_cu_seqlens_k,
+            seqused_k,
             None,
             block_table,
             alibi_slopes,
@@ -158,9 +161,9 @@ def flash_attn_varlen_func(
             None, None,       # k_new, v_new
             out,
             cu_seqlens_q,
-            cu_seqlens_k,
+            None,             # cu_seqlens_k
             None,             # cu_seqlens_k_new
-            None, None,       # seqused_q, seqused_k
+            None, seqused_k,  # seqused_q, seqused_k
             max_seqlen_q, max_seqlen_k,
             block_table,
             alibi_slopes,
