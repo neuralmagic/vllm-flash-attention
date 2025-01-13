@@ -22,7 +22,7 @@ set(ignoreMe "${VLLM_PYTHON_PATH}")
 set(PYTHON_SUPPORTED_VERSIONS "3.8" "3.9" "3.10" "3.11" "3.12")
 
 # Supported NVIDIA architectures.
-set(CUDA_SUPPORTED_ARCHS "8.0;8.6;8.9;9.0;9.0a")
+set(CUDA_SUPPORTED_ARCHS "8.0;8.6;8.9;9.0")
 
 # Supported AMD GPU architectures.
 set(HIP_SUPPORTED_ARCHS "gfx906;gfx908;gfx90a;gfx940;gfx941;gfx942;gfx1030;gfx1100")
@@ -183,10 +183,11 @@ if (FA2_ENABLED)
     # For CUDA we set the architectures on a per file basis
     if (VLLM_GPU_LANG STREQUAL "CUDA")
         cuda_archs_loose_intersection(FA2_ARCHS "8.0;9.0" ${CUDA_ARCHS})
+        message(STATUS "FA2_ARCHS: ${FA2_ARCHS}")
 
         set_gencode_flags_for_srcs(
-        SRCS "${FA2_ARCHS}"
-        CUDA_ARCHS "${FA2_GEN_SRCS}")
+            SRCS "${FA2_GEN_SRCS}"
+            CUDA_ARCHS "${FA2_ARCHS}")
     endif()
 
     define_gpu_extension_target(
@@ -225,10 +226,11 @@ if (FA3_ENABLED)
     # For CUDA we set the architectures on a per file basis
     if (VLLM_GPU_LANG STREQUAL "CUDA")
         cuda_archs_loose_intersection(FA3_ARCHS "9.0a" ${CUDA_ARCHS})
+        message(STATUS "FA3_ARCHS: ${FA3_ARCHS}")
 
         set_gencode_flags_for_srcs(
-            SRCS "${FA3_ARCHS}"
-            CUDA_ARCHS "${FA3_GEN_SRCS}")
+            SRCS "${FA3_GEN_SRCS}"
+            CUDA_ARCHS "${FA3_ARCHS}")
     endif()
 
     define_gpu_extension_target(
