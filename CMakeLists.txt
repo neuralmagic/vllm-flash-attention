@@ -122,63 +122,7 @@ string(REPLACE "-O2" "-O3" CMAKE_CUDA_FLAGS_RELWITHDEBINFO "${CMAKE_CUDA_FLAGS_R
 #
 
 if (FA2_ENABLED)
-    set(FA2_GEN_SRCS
-        "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim256_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim32_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim32_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim64_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim96_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_hdim256_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu"
-        "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_causal_sm80.cu")
+    file(GLOB FA3_GEN_SRCS "csrc/flash_attn/src/flash_fwd_*.cu")
 
     # For CUDA we set the architectures on a per file basis
     if (VLLM_GPU_LANG STREQUAL "CUDA")
@@ -196,7 +140,7 @@ if (FA2_ENABLED)
         LANGUAGE ${VLLM_GPU_LANG}
         SOURCES 
             csrc/flash_attn/flash_api.cpp 
-            csrc/flash_attn/torch_flash_api.cpp 
+            csrc/flash_attn/flash_api_torch_lib.cpp 
             ${FA2_GEN_SRCS}
         COMPILE_FLAGS ${VLLM_FA_GPU_FLAGS}
         USE_SABI 3
