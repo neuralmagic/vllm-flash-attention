@@ -7,7 +7,6 @@ from typing import List, Optional, Tuple
 
 import pytest
 import torch
-from torch.utils._python_dispatch import TorchDispatchMode
 
 from vllm_flash_attn.flash_attn_interface import (
     flash_attn_varlen_func,
