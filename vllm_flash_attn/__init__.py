@@ -5,5 +5,6 @@ from .flash_attn_interface import (
     flash_attn_varlen_func,
     flash_attn_with_kvcache,
     is_fa2_supported,
-    is_fa3_supported
+    is_fa3_supported,
+    is_fa_version_supported,
 )

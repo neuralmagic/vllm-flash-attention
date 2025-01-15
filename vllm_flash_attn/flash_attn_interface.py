@@ -18,8 +18,7 @@ except ImportError:
 try:
     from . import _vllm_fa3_C  # noqa: F401
     FA3_AVAILABLE = True
-except ImportError as e:
-    print(e)
+except ImportError:
     FA3_AVAILABLE = False
 
 # isort: on
@@ -31,6 +30,13 @@ def is_fa2_supported(device = None) -> bool:
 
 def is_fa3_supported(device = None) -> bool:
     return FA3_AVAILABLE and torch.cuda.get_device_capability(device)[0] >= 8
+
+def is_fa_version_supported(fa_version: int, device = None) -> bool:
+    assert fa_version in [2, 3], f"Unsupported FA version: {fa_version}"
+    if fa_version == 2:
+        return is_fa2_supported(device)
+    elif fa_version == 3:
+        return is_fa3_supported(device)
 
 #
 #  For vLLM we only care about `flash_attn_varlen_func` and 
