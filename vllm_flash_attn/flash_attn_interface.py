@@ -46,10 +46,11 @@ def flash_attn_varlen_func(
     q,
     k,
     v,
-    cu_seqlens_q,
-    seqused_k,
     max_seqlen_q,
+    cu_seqlens_q,
     max_seqlen_k,
+    cu_seqlens_k=None, # only used for non-paged prefill
+    seqused_k=None,
     dropout_p=0.0,
     softmax_scale=None,
     causal=False,
@@ -116,6 +117,13 @@ def flash_attn_varlen_func(
             logsumexp of each row of the matrix QK^T * scaling (e.g., log of the softmax
             normalization factor).
     """
+    assert cu_seqlens_k is not None or seqused_k is not None, \
+        "cu_seqlens_k or seqused_k must be provided"
+    assert cu_seqlens_k is None or seqused_k is None, \
+        "cu_seqlens_k and seqused_k cannot be provided at the same time"
+    assert block_table is None or seqused_k is not None, \
+        "seqused_k must be provided if block_table is provided"
+    
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
     # custom op does not support non-tuple input
@@ -131,14 +139,12 @@ def flash_attn_varlen_func(
     
     if fa_version == 2:
         out, softmax_lse = torch.ops._vllm_fa2_C.varlen_fwd(
-            q,
-            k,
-            v,
+            q, k, v,
             out,
             cu_seqlens_q,
             # cu_seqlens_k not used since we use seqused_k, but flash_api.cpp 
             # still wants it so we pass all zeros
-            dummy_cu_seqlens_k,
+            dummy_cu_seqlens_k if cu_seqlens_k is None else cu_seqlens_k,
             seqused_k,
             None,
             block_table,
@@ -157,7 +163,7 @@ def flash_attn_varlen_func(
         )
     elif fa_version == 3:
         out, softmax_lse, _, _ = torch.ops._vllm_fa3_C.fwd(
-            q, k, v,          # q, k, v
+            q, k, v,
             None, None,       # k_new, v_new
             out,
             cu_seqlens_q,
@@ -310,11 +316,8 @@ def flash_attn_with_kvcache(
     
     if fa_version == 2:
         out, softmax_lse = torch.ops._vllm_fa2_C.fwd_kvcache(
-            q,
-            k_cache,
-            v_cache,
-            k,
-            v,
+            q, k_cache, v_cache,
+            k, v,             # k_new, v_new
             cache_seqlens,
             rotary_cos,
             rotary_sin,
