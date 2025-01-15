@@ -638,7 +638,10 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
         TORCH_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
         CHECK_SHAPE(out, sizes[0], sizes[1], head_size);
         if (seqlenq_ngroups_swapped) {
-            out = out.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size});
+            // NOTE(woosuk): We create a temporary buffer and copy the result to the `out_` tensor eventually.
+            // This is because we reshaped the `q` tensor for the splik-KV optimization, and the `out_` tensor
+            // has the same shape as the original `q` tensor, not the reshaped one.
+            out = torch::empty_like(q);
         }
     } else {
         out = torch::empty_like(q);
@@ -724,7 +727,7 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
     // auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
     // auto rng_state = torch::empty({2}, options.dtype(torch::kInt64));
     // // Forward kernel will populate memory with the seed and offset.
-    // params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
+    // params.rng_state = reinterpret_cast<uinpft64_t*>(rng_state.data_ptr());
 
     // if (p_dropout > 0.0)  {
     //     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
