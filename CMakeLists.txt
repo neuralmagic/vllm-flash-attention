@@ -138,9 +138,10 @@ if (FA2_ENABLED)
         _vllm_fa2_C
         DESTINATION vllm_flash_attn
         LANGUAGE ${VLLM_GPU_LANG}
-        SOURCES 
-            csrc/flash_attn/flash_api.cpp 
-            csrc/flash_attn/flash_api_torch_lib.cpp 
+        SOURCES
+            csrc/flash_attn/flash_api.cpp
+            csrc/flash_attn/flash_api_sparse.cpp
+            csrc/flash_attn/flash_api_torch_lib.cpp
             ${FA2_GEN_SRCS}
         COMPILE_FLAGS ${VLLM_FA_GPU_FLAGS}
         USE_SABI 3
@@ -183,8 +184,8 @@ if (FA3_ENABLED)
         LANGUAGE ${VLLM_GPU_LANG}
         SOURCES 
             hopper/flash_fwd_combine.cu
-            hopper/flash_api.cpp 
-            hopper/flash_api_torch_lib.cpp 
+            hopper/flash_api.cpp
+            hopper/flash_api_torch_lib.cpp
             ${FA3_GEN_SRCS}
         COMPILE_FLAGS ${VLLM_FA_GPU_FLAGS}
         ARCHITECTURES ${VLLM_FA_GPU_ARCHES}
